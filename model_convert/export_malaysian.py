@@ -30,9 +30,31 @@ from whisper.model import (
     ResidualAttentionBlock,
     TextDecoder,
 )
-
+from transformers import (
+    WhisperTokenizerFast,
+)
 import json
 import base64
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        # fmt: off
+        choices=[
+            "tiny",
+            "base",
+            "small-v2",
+            "small-v3",
+            "medium",
+            "medium-v2"
+            ],
+        # fmt: on
+    )
+    return parser.parse_args()
+
 
 def causal_mask_1d(n: int, L: int, device=None, dtype=torch.int32):
     """
@@ -402,22 +424,23 @@ def convert_tokens(name, model, new_tokenizer=None, new_tokens=[]):
 
 @torch.no_grad()
 def main():
-    name = "large-v3-turbo"
-
+    args = get_args()
+    print(vars(args))
+    
     opset_version = 17
-    dims = whisper.load_model(name).dims
-    dims.n_vocab += 1
+    openai_name = args.model.split('-')[0]
+    dims = whisper.load_model(openai_name).dims
     model = whisper.model.Whisper(dims)
 
     # Use convert_hf_to_openai.py to get pt
-    model.load_state_dict(torch.load("whisper_malaysian.pt"), strict=False)
-    dims = model.dims
+    model.load_state_dict(torch.load(f"whisper-malaysian-{args.model}.bin")['model_state_dict'])
 
     # write tokens
+    repo_id = f'mesolitica/malaysian-whisper-{args.model}'
     # hf_tokenizer = WhisperTokenizerFast.from_pretrained(
-    #     'mesolitica/Malaysian-whisper-large-v3-turbo-v3'
+    #     repo_id
     # )
-    convert_tokens(name, model)
+    convert_tokens(args.model, model)
 
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual, num_languages=model.num_languages
@@ -456,7 +479,7 @@ def main():
     if "external_data" in export_sig.parameters:
         kwargs["external_data"] = False
 
-    encoder_filename = f"{name}-encoder.onnx"
+    encoder_filename = f"malaysian-{args.model}-encoder.onnx"
     torch.onnx.export(
         encoder,
         mel,
@@ -468,7 +491,8 @@ def main():
     )
 
     encoder_meta_data = {
-        "model_type": f"whisper-{name}",
+        "model_type": f"malaysian-whisper-{args.model}",
+        "repo_id": repo_id,
         "version": "1",
         "maintainer": "k2-fsa",
         "n_mels": dims.n_mels,
@@ -497,24 +521,26 @@ def main():
         "non_speech_tokens": ",".join(list(map(str, tokenizer.non_speech_tokens))),
         "transcribe": tokenizer.transcribe,
         "translate": tokenizer.translate,
+        # "transcribeprecise": hf_tokenizer.convert_tokens_to_ids('<|transcribeprecise|>'),
         "sot_prev": tokenizer.sot_prev,
         "sot_lm": tokenizer.sot_lm,
         "no_timestamps": tokenizer.no_timestamps,
     }
     print(f"encoder_meta_data: {encoder_meta_data}")
     add_meta_data(filename=encoder_filename, meta_data=encoder_meta_data)
-    with open(f"{name}_config.json", "w") as f:
+    with open(f"malaysian-{args.model}-config.json", "w") as f:
         json.dump(encoder_meta_data, f, indent=4)
 
-    encoder_external_filename = encoder_filename.split(".onnx")[0]
-    encoder_model = onnx.load(encoder_filename)
-    onnx.save(
-        encoder_model,
-        encoder_filename,
-        save_as_external_data=True,
-        all_tensors_to_one_file=True,
-        location=encoder_external_filename + ".weights",
-    )
+    if "large" in args.model or "turbo" in args.model:
+        encoder_external_filename = encoder_filename.split(".onnx")[0]
+        encoder_model = onnx.load(encoder_filename)
+        onnx.save(
+            encoder_model,
+            encoder_filename,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=encoder_external_filename + ".weights",
+        )
 
     tokens = torch.tensor([[tokenizer.sot]], dtype=torch.int32)
     decoder = TextDecoderTensorCache(model.decoder, dims.n_text_ctx)
@@ -546,7 +572,7 @@ def main():
 
     output_names = [f"logits", "this_self_k", "this_self_v"]
 
-    decoder_filename = f"{name}-decoder.onnx"
+    decoder_filename = f"malaysian-{args.model}-decoder.onnx"
     torch.onnx.export(
         decoder,
         (
@@ -565,20 +591,20 @@ def main():
         **kwargs,
     )
 
-    decoder_external_filename = decoder_filename.split(".onnx")[0]
-    decoder_model = onnx.load(decoder_filename)
-    onnx.save(
-        decoder_model,
-        decoder_filename,
-        save_as_external_data=True,
-        all_tensors_to_one_file=True,
-        location=decoder_external_filename + ".weights",
-    )
+    if "large" in args.model or "turbo" in args.model:
+        decoder_external_filename = decoder_filename.split(".onnx")[0]
+        decoder_model = onnx.load(decoder_filename)
+        onnx.save(
+            decoder_model,
+            decoder_filename,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=decoder_external_filename + ".weights",
+        )
 
-    os.system("rm *.weight")
-    os.system("rm *.bias")
-    os.system("rm onnx__*")
-
+        os.system("rm *.weight")
+        os.system("rm *.bias")
+        os.system("rm onnx__*")
 
 if __name__ == "__main__":
     torch.set_num_threads(1)
@@ -597,5 +623,5 @@ if __name__ == "__main__":
 
 '''
 Usage:
-python3 ./export_onnx.py --model tiny
+python3 export_malaysian.py --model tiny
 '''

@@ -26,7 +26,9 @@ import soundfile as sf
 import torch
 import whisper
 from export_onnx import get_args, causal_mask_1d
-
+from transformers import (
+    WhisperTokenizerFast,
+)
 
 class OnnxModel:
     def __init__(
@@ -70,6 +72,7 @@ class OnnxModel:
         self.n_text_ctx = int(meta["n_text_ctx"])
         self.n_text_state = int(meta["n_text_state"])
         self.n_mels = int(meta["n_mels"])
+        self.sot = int(meta["sot"])
         self.eot = int(meta["eot"])
         self.no_timestamps = int(meta["no_timestamps"])
         self.sot_sequence = list(map(int, meta["sot_sequence"].split(",")))
@@ -81,6 +84,11 @@ class OnnxModel:
         self.all_language_codes = meta["all_language_codes"].split(",")
         self.lang2id = dict(zip(self.all_language_codes, self.all_language_tokens))
         self.id2lang = dict(zip(self.all_language_tokens, self.all_language_codes))
+        self.task_id_map = {
+            # 'transcribeprecise': int(meta['transcribeprecise']),
+            'transcribe': int(meta['transcribe']),
+            'translate': int(meta['translate'])
+        }
 
     def init_decoder(self, decoder: str):
         self.decoder = ort.InferenceSession(
@@ -176,10 +184,14 @@ def compute_feat(filename: str, n_mels: int):
     return mel
 
 
-def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, tokenizer):
+def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task: str, tokenizer):
     name = os.path.splitext(os.path.basename(sound_file))[0]
 
+    model.sot_sequence[0] = model.sot
     model.sot_sequence[1] = model.lang2id[lang]
+    model.sot_sequence[2] = model.task_id_map[task]
+    model.sot_sequence[3] = model.no_timestamps
+    print("sot sequence", model.sot_sequence)
 
     mel = compute_feat(sound_file, n_mels=model.n_mels).numpy()
 
@@ -223,7 +235,7 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, token
 
     ans = []
 
-    while idx != model.eot and offset.item() < 200:
+    while idx != model.eot and offset.item() < model.n_text_ctx:
         ans.append(idx)
         token = np.array([[idx]], dtype=np.int32)  # no_timestamps
 
@@ -245,8 +257,11 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, token
 
         offset += 1
 
+    print(f"{name} result")
     print(ans)
+
     text = "".join(tokenizer.decode(ans)).strip()
+    # text = tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(ans))
     print(text)
 
 
@@ -254,39 +269,39 @@ def main():
     args = get_args()
     print(args)
     model_type = args.model
-
-    args = get_args()
-    print(vars(args))
+    task = 'transcribe'
 
     torch_model = whisper.load_model(args.model)
     tokenizer = whisper.tokenizer.get_tokenizer(
         torch_model.is_multilingual, num_languages=torch_model.num_languages
     )
+    # tokenizer = WhisperTokenizerFast.from_pretrained(
+    #     'mesolitica/Malaysian-whisper-large-v3-turbo-v3'
+    # )
 
-    model = OnnxModel(f"./{args.model}-encoder.onnx", f"./{args.model}-decoder.onnx")
-
-    # [sot, lang, task, notimestamps]
-    model.sot_sequence[1] = model.lang2id["en"]
-
-    # tiny.en: [50257, 50362]
-    # tiny: [50258, 50259, 50359, 50363]
-    print("sot sequence", model.sot_sequence)
-    print(f"model.n_text_layer: {model.n_text_layer}")
+    model = OnnxModel(f"./malaysian-{args.model}-encoder.onnx", f"./malaysian-{args.model}-decoder.onnx")
 
     dataset = {
-        'en': ['example/en.mp3'],
-        'ja': ['example/ja.mp3'],
-        'ko': ['example/ko.mp3'],
-        'zh': ['example/zh.mp3']
+        # 'en': ['example/en.mp3'],
+        # 'ja': ['example/ja.mp3'],
+        # 'ko': ['example/ko.mp3'],
+        # 'zh': ['example/zh.mp3'],
+        'ms': [
+               './malaysian_test/G5001/G5001_1_S0002.wav', 
+               './malaysian_test/G5001/G5001_1_S0003.wav',
+               './malaysian_test/G5001/G5001_1_S0005.wav',
+               './malaysian_test/G5001/G5001_1_S0006.wav',
+               './malaysian_test/G5001/G5001_1_S0007.wav',
+              ]
     }
 
     dataset_num = sum(len(v) for v in dataset.values())
     assert dataset_num > 0, 'dataset is empty'
-    print(f"Generating data, total {len(dataset)}")
+    print(f"Generating data, total {dataset_num}")
     gen_num = 0
     for lang in dataset.keys():
         for sound_path in dataset[lang]:
-            forward(model_type, model, sound_path, lang, tokenizer)
+            forward(model_type, model, sound_path, lang, task, tokenizer)
 
             gen_num += 1
 

@@ -23,7 +23,7 @@ def get_args():
         type=str,
         required=False,
         default="../models-ax650",
-        help="model path for *.axmodel, tokens.txt, positional_embedding.bin",
+        help="model path for *.axmodel, tokens.txt",
     )
     parser.add_argument(
         "--language",

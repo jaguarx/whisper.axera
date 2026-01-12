@@ -2,6 +2,7 @@ import argparse
 import os
 import logging
 import re
+import pandas as pd
 from whisper import Whisper
 
 
@@ -149,6 +150,55 @@ class CommonVoiceDataset:
         return len(self.data)
 
 
+
+class CustomDataset:
+    """自定义数据集解析器"""
+
+    def __init__(self, label_path: str):
+        """
+        初始化数据集
+        """
+
+        self.label_path = label_path
+        self.dataset_dir = os.path.dirname(label_path)
+
+        # 检查必要文件和文件夹是否存在
+        assert os.path.exists(label_path), f"{label_path}文件不存在: {label_path}"
+
+        # 加载csv
+        self.data = []
+        df = pd.read_csv(label_path, sep='\t')
+        for i, row in df.iterrows():
+            audio_path = os.path.join(self.dataset_dir, row['SPEAKER_ID'], row['UTTRANS_ID'])
+            gt = row['TRANSCRIPTION']
+            self.data.append({"audio_path": audio_path, "gt": gt})
+
+        # 使用logging而不是print
+        logger = logging.getLogger()
+        logger.info(f"加载了 {len(self.data)} 条数据")
+
+    def __iter__(self):
+        """返回迭代器"""
+        self.index = 0
+        return self
+
+    def __next__(self):
+        """返回下一个数据项"""
+        if self.index >= len(self.data):
+            raise StopIteration
+
+        item = self.data[self.index]
+        audio_path = item["audio_path"]
+        ground_truth = item["gt"]
+
+        self.index += 1
+        return audio_path, ground_truth
+
+    def __len__(self):
+        """返回数据集大小"""
+        return len(self.data)
+    
+
 def get_args():
     parser = argparse.ArgumentParser(prog="whisper", description="Test WER on dataset")
     parser.add_argument(
@@ -156,7 +206,7 @@ def get_args():
         "-d",
         type=str,
         required=True,
-        choices=["aishell", "common_voice"],
+        choices=["aishell", "common_voice", "custom"],
         help="Test dataset",
     )
     parser.add_argument(
@@ -182,8 +232,8 @@ def get_args():
         "-p",
         type=str,
         required=False,
-        default="../models/models-ax650",
-        help="model path for *.axmodel, tokens.txt, positional_embedding.bin",
+        default="../models-ax650",
+        help="model path for *.axmodel, tokens.txt",
     )
     parser.add_argument(
         "--language",
@@ -258,6 +308,8 @@ def main():
         dataset = AIShellDataset(args.gt_path)
     elif dataset_type == "common_voice":
         dataset = CommonVoiceDataset(args.gt_path)
+    elif dataset_type == "custom":
+        dataset = CustomDataset(args.gt_path)
     else:
         raise ValueError(f"Unknown dataset type {dataset_type}")
 
@@ -279,7 +331,7 @@ def main():
         hypothesis = remove_punctuation(hypothesis)
         reference = remove_punctuation(reference)
 
-        character_error_num = min_distance(reference, hypothesis)
+        character_error_num = min_distance(reference.lower(), hypothesis.lower())
         character_num = len(reference)
         character_error_rate = character_error_num / character_num * 100
 

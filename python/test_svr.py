@@ -5,7 +5,7 @@ def transcribe_audio(
     server_url: str,
     wav_path: str,
     model_type: str = "tiny",
-    model_path: str = "../models/models-ax650",
+    model_path: str = "../models-ax650",
     language: str = "zh",
     task: str = "transcribe",
 ):

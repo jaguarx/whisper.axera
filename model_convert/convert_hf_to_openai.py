@@ -6,6 +6,8 @@ from transformers import (
 )
 import re
 import torch
+import whisper
+from export_malaysian import get_args
 
 def hf_to_whisper_states(text):
     text = re.sub('.layers.', '.blocks.', text)
@@ -27,12 +29,15 @@ def hf_to_whisper_states(text):
     text = re.sub('.final_layer_norm.', '.mlp_ln.', text)
     text = re.sub('encoder.layer_norm.', 'encoder.ln_post.', text)
     text = re.sub('decoder.layer_norm.', 'decoder.ln.', text)
+    text = re.sub('proj_out.weight', 'decoder.token_embedding.weight', text)
     return text
 
 
 # Load HF Model
+args = get_args()
+openai_name = args.model.split('-')[0]
 model = WhisperForConditionalGeneration.from_pretrained(
-    'mesolitica/Malaysian-whisper-large-v3-turbo-v3', 
+    f'mesolitica/malaysian-whisper-{args.model}', 
     dtype = torch.float32,
 ).cpu().eval()
 
@@ -42,4 +47,11 @@ for key in list(hf_state_dict.keys()):
     new_key = hf_to_whisper_states(key)
     hf_state_dict[new_key] = hf_state_dict.pop(key)
 
-torch.save(hf_state_dict, "whisper_malaysian.pt")
+model = whisper.load_model(openai_name)
+dims = model.dims
+# Save it
+torch.save({
+    "dims": model.dims.__dict__,
+    "model_state_dict": hf_state_dict
+}, f"whisper-malaysian-{args.model}.bin")
+print(f"Save to whisper-malaysian-{args.model}.bin")

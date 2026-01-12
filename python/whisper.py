@@ -124,9 +124,12 @@ class Whisper:
         return tokens
 
     def load_audio(self, audio: str):
-        data, sample_rate = librosa.load(audio, sr=self.config.sample_rate)
-        samples = np.ascontiguousarray(data)
-        return samples, sample_rate
+        samples, sample_rate = librosa.load(audio, sr=self.config.sample_rate)
+        if sample_rate != self.config.sample_rate:
+            samples = librosa.resample(samples, orig_sr=sample_rate, target_sr=self.config.sample_rate)
+
+        samples = np.ascontiguousarray(samples)
+        return samples, self.config.sample_rate
 
     def compute_feature(self, audio: np.ndarray):
         mel = librosa.feature.melspectrogram(
