@@ -31,10 +31,13 @@ from whisper.model import (
     TextDecoder,
 )
 from transformers import (
-    WhisperTokenizerFast,
+    WhisperForConditionalGeneration, 
+    WhisperTokenizerFast
 )
 import json
 import base64
+import re
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -44,14 +47,23 @@ def get_args():
         required=True,
         # fmt: off
         choices=[
-            "tiny",
-            "base",
-            "small-v2",
-            "small-v3",
-            "medium",
-            "medium-v2"
+            "tiny", "tiny.en", "base", "base.en",
+            "small", "small.en", "medium", "medium.en",
+            "large-v1", "large-v2",
+            "large", "large-v3", "turbo", # these three have feature dim 128
+            "distil-medium.en", "distil-small.en", "distil-large-v2",
+            "distil-large-v3",
+            "distil-large-v3.5",
+            # for fine-tuned models from icefall
+            "medium-aishell",
             ],
         # fmt: on
+    )
+    parser.add_argument(
+        "--repo_id",
+        type=str,
+        required=False,
+        default=None
     )
     return parser.parse_args()
 
@@ -422,24 +434,66 @@ def convert_tokens(name, model, new_tokenizer=None, new_tokens=[]):
             f.write(f"{t} {i}\n")
 
 
+def hf_to_whisper_states(text):
+    text = re.sub('.layers.', '.blocks.', text)
+    text = re.sub('.self_attn.', '.attn.', text)
+    text = re.sub('.q_proj.', '.query.', text)
+    text = re.sub('.k_proj.', '.key.', text)
+    text = re.sub('.v_proj.', '.value.', text)
+    text = re.sub('.out_proj.', '.out.', text)
+    text = re.sub('.fc1.', '.mlp.0.', text)
+    text = re.sub('.fc2.', '.mlp.2.', text)
+    text = re.sub('.fc3.', '.mlp.3.', text)
+    text = re.sub('.fc3.', '.mlp.3.', text)
+    text = re.sub('.encoder_attn.', '.cross_attn.', text)
+    text = re.sub('.cross_attn.ln.', '.cross_attn_ln.', text)
+    text = re.sub('.embed_positions.weight', '.positional_embedding', text)
+    text = re.sub('.embed_tokens.', '.token_embedding.', text)
+    text = re.sub('model.', '', text)
+    text = re.sub('attn.layer_norm.', 'attn_ln.', text)
+    text = re.sub('.final_layer_norm.', '.mlp_ln.', text)
+    text = re.sub('encoder.layer_norm.', 'encoder.ln_post.', text)
+    text = re.sub('decoder.layer_norm.', 'decoder.ln.', text)
+    text = re.sub('proj_out.weight', 'decoder.token_embedding.weight', text)
+    return text
+
+
+def convert_hf_to_openai(repo_id, openai_model_type):
+    hf_model = WhisperForConditionalGeneration.from_pretrained(
+        repo_id, 
+        dtype = torch.float32,
+    ).cpu().eval()
+
+    # Rename layers
+    hf_state_dict = hf_model.state_dict()
+    for key in list(hf_state_dict.keys()):
+        new_key = hf_to_whisper_states(key)
+        hf_state_dict[new_key] = hf_state_dict.pop(key)
+
+    model = whisper.load_model(openai_model_type)
+
+    if model.dims.n_vocab != hf_model.config.vocab_size:
+        model.dims.n_vocab = hf_model.config.vocab_size
+
+        model = whisper.Whisper(model.dims)
+        
+    model.load_state_dict(hf_state_dict)
+    return model
+
+
 @torch.no_grad()
 def main():
     args = get_args()
     print(vars(args))
     
     opset_version = 17
-    openai_name = args.model.split('-')[0]
-    dims = whisper.load_model(openai_name).dims
-    model = whisper.model.Whisper(dims)
+    if args.repo_id is not None:
+        model = convert_hf_to_openai(args.repo_id, args.model)
+    else:
+        model = whisper.load_model(args.model)
 
-    # Use convert_hf_to_openai.py to get pt
-    model.load_state_dict(torch.load(f"whisper-malaysian-{args.model}.bin")['model_state_dict'])
+    dims = model.dims
 
-    # write tokens
-    repo_id = f'mesolitica/malaysian-whisper-{args.model}'
-    # hf_tokenizer = WhisperTokenizerFast.from_pretrained(
-    #     repo_id
-    # )
     convert_tokens(f"{args.model}", model)
 
     tokenizer = whisper.tokenizer.get_tokenizer(
@@ -492,7 +546,7 @@ def main():
 
     encoder_meta_data = {
         "model_type": f"malaysian-whisper-{args.model}",
-        "repo_id": repo_id,
+        "repo_id": args.repo_id,
         "version": "1",
         "maintainer": "k2-fsa",
         "n_mels": dims.n_mels,
