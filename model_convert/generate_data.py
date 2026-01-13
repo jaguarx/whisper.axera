@@ -25,7 +25,8 @@ import librosa
 import soundfile as sf
 import torch
 import whisper
-from export_onnx import get_args, causal_mask_1d
+from export_onnx import causal_mask_1d
+from export_malaysian import get_args
 from transformers import (
     WhisperTokenizerFast,
 )
@@ -257,7 +258,7 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task:
 
         offset += 1
 
-    print(f"{name} result")
+    print(f"\n{name} result:")
     print(ans)
 
     text = "".join(tokenizer.decode(ans)).strip()
@@ -271,7 +272,8 @@ def main():
     model_type = args.model
     task = 'transcribe'
 
-    torch_model = whisper.load_model(args.model)
+    openai_name = args.model.split('-')[0]
+    torch_model = whisper.load_model(openai_name)
     tokenizer = whisper.tokenizer.get_tokenizer(
         torch_model.is_multilingual, num_languages=torch_model.num_languages
     )

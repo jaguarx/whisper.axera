@@ -25,7 +25,7 @@ def setup_logging():
         logger.removeHandler(handler)
 
     # 创建文件handler
-    file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
     file_handler.setLevel(logging.INFO)
     file_formatter = logging.Formatter(log_format, date_format)
     file_handler.setFormatter(file_formatter)
@@ -223,7 +223,7 @@ def get_args():
         "--model_type",
         "-t",
         type=str,
-        choices=["tiny", "base", "small", "large", "large-v3", "turbo"],
+        choices=["tiny", "base", "small", "medium", "large", "large-v3", "turbo"],
         required=True,
         help="model type, only support tiny, base and small currently",
     )

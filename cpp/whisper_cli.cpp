@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
 #else
     cmd.add<std::string>("model_path", 'p', "model path which contains tiny/ base/ small/ turbo/", false, "../models-ax630c");
 #endif
-    cmd.add<std::string>("language", 0, "en, zh", false, "zh");
+    cmd.add<std::string>("language", 'l', "en, zh", false, "zh");
     cmd.parse_check(argc, argv);
 
     // 0. get app args, can be removed from user's app

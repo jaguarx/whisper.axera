@@ -440,7 +440,7 @@ def main():
     # hf_tokenizer = WhisperTokenizerFast.from_pretrained(
     #     repo_id
     # )
-    convert_tokens(args.model, model)
+    convert_tokens(f"{args.model}", model)
 
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual, num_languages=model.num_languages
@@ -528,7 +528,7 @@ def main():
     }
     print(f"encoder_meta_data: {encoder_meta_data}")
     add_meta_data(filename=encoder_filename, meta_data=encoder_meta_data)
-    with open(f"malaysian-{args.model}-config.json", "w") as f:
+    with open(f"{args.model}_config.json", "w") as f:
         json.dump(encoder_meta_data, f, indent=4)
 
     if "large" in args.model or "turbo" in args.model:
