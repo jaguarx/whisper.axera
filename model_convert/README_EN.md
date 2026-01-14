@@ -17,6 +17,8 @@ pip install -r requirements.txt
 
 ## Export model(PyTorch -> ONNX)
 
+### OpenAI models
+
 tiny
 ```
 python export_onnx.py --model tiny
@@ -28,6 +30,18 @@ python export_onnx.py --model small
 ```
 
 After successful export, two model files (with prefixes tiny-* or small-*) will be generated
+
+### HuggingFace models
+
+I noticed that some users need to export models from huggingface, especially for finetuned models trained on minor languages.  
+export_onnx.py now support parameter --repo_id
+
+Example usage:
+
+Malaysian finetuned small model
+```
+python export_onnx.py --model tiny --repo_id mesolitica/malaysian-whisper-tiny
+```
 
 ## Export model(ONNX -> Axera)
 

@@ -17,6 +17,8 @@ pip install -r requirements.txt
 
 ## 导出模型（PyTorch -> ONNX）
 
+### OpenAI模型
+
 导出 tiny 模型
 ```
 python export_onnx.py --model tiny
@@ -25,6 +27,18 @@ python export_onnx.py --model tiny
 导出 small 模型
 ```
 python export_onnx.py --model small
+```
+
+### HuggingFace格式的模型
+
+部分用户需要使用HuggingFace上finetune过的模型，特别对于小语种的支持，  
+export_onnx.py 新增 --repo_id 参数，传入hf上的repo_id 以及--model传入对应规模即可转换  
+
+示例:
+
+马来西亚语finetune的small模型
+```
+python export_onnx.py --model tiny --repo_id mesolitica/malaysian-whisper-tiny
 ```
 
 导出成功后会生成以 `tiny-*` 或 `small-*` 开头的两个模型（`xxx-encoder.onnx`, `xxx-decoder.onnx`）和必要的文件

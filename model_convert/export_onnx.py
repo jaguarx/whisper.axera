@@ -492,6 +492,7 @@ def main():
     dims = model.dims
 
     convert_tokens(f"{args.model}", model)
+    print(f"Export tokens to {args.model}-tokens.txt")
 
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual, num_languages=model.num_languages
@@ -582,6 +583,8 @@ def main():
     with open(f"{args.model}_config.json", "w") as f:
         json.dump(encoder_meta_data, f, indent=4)
 
+        print(f"Export config to {args.model}_config.json")
+
     if "large" in args.model or "turbo" in args.model:
         encoder_external_filename = encoder_filename.split(".onnx")[0]
         encoder_model = onnx.load(encoder_filename)
@@ -592,6 +595,8 @@ def main():
             all_tensors_to_one_file=True,
             location=encoder_external_filename + ".weights",
         )
+
+    print(f'Export encoder to {encoder_filename}')
 
     tokens = torch.tensor([[tokenizer.sot]], dtype=torch.int32)
     decoder = TextDecoderTensorCache(model.decoder, dims.n_text_ctx)
@@ -669,6 +674,7 @@ def main():
         os.system("rm *.bias")
         os.system("rm onnx__*")
 
+    print(f'Export decoder to {decoder_filename}')
 
 if __name__ == "__main__":
     torch.set_num_threads(1)

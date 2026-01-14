@@ -24,6 +24,7 @@ OpenAI Whisper on Axera
  - tiny
  - base
  - small
+ - medium
  - turbo
 
 
