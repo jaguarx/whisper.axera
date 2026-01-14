@@ -2,11 +2,11 @@ import axengine as axe
 import numpy as np
 import librosa
 import os
-from typing import Union
-from whisper_tokenizer import *
+from typing import Union, List
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import zhconv
+import base64
 
 
 @dataclass
@@ -36,7 +36,7 @@ class Whisper:
     def __init__(self, model_type: str, model_path: str, language: str, task: str):
         self.language = language
         self.task = task
-        self.encoder, self.decoder, self.tokenizer, model_config = self.load_model(
+        self.encoder, self.decoder, model_config = self.load_model(
             model_type, model_path, language, task
         )
         self.config = self.load_config(model_config)
@@ -71,12 +71,6 @@ class Whisper:
         model_config["all_language_codes"] = [
             i for i in model_config["all_language_codes"].split(",")
         ]
-        tokenizer = get_tokenizer(
-            model_config["is_multilingual"],
-            num_languages=len(model_config["all_language_codes"]),
-            language=language,
-            task=task,
-        )
 
         self.id2token = self.load_tokens(required_files[3])
         self.lang2token = {
@@ -90,7 +84,7 @@ class Whisper:
             "translate": model_config["translate"],
         }
 
-        return encoder, decoder, tokenizer, model_config
+        return encoder, decoder, model_config
 
     def load_config(self, model_config):
         config = WhisperConfig
