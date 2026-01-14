@@ -5,7 +5,7 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 
-from whisper import Whisper
+from whisper_ax import Whisper
 import cgi
 
 

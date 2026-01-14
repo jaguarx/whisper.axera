@@ -1,6 +1,6 @@
 import argparse
 import os
-from whisper import Whisper
+from whisper_ax import Whisper
 import time
 
 

@@ -1,13 +1,13 @@
 import torch
 from transformers.models.whisper import tokenization_whisper
 
-tokenization_whisper.TASK_IDS = ["translate", "transcribe", 'transcribeprecise']
+tokenization_whisper.TASK_IDS = ["translate", "transcribe", "transcribeprecise"]
 
 from transformers import (
-    WhisperFeatureExtractor, 
-    WhisperForConditionalGeneration, 
-    WhisperProcessor, 
-    WhisperTokenizerFast
+    WhisperFeatureExtractor,
+    WhisperForConditionalGeneration,
+    WhisperProcessor,
+    WhisperTokenizerFast,
 )
 import soundfile as sf
 import numpy as np
@@ -19,6 +19,7 @@ from export_malaysian import get_args
 
 
 args = get_args()
+
 
 def load_audio(filename: str) -> Tuple[np.ndarray, int]:
     data, sample_rate = sf.read(
@@ -51,22 +52,26 @@ def compute_feat(filename: str, n_mels: int):
 sr = 16000
 model_name = args.model
 feature_extractor = WhisperFeatureExtractor.from_pretrained(
-    f'mesolitica/malaysian-whisper-{model_name}'
+    f"mesolitica/malaysian-whisper-{model_name}"
 )
 processor = WhisperProcessor.from_pretrained(
-    f'mesolitica/malaysian-whisper-{model_name}'
+    f"mesolitica/malaysian-whisper-{model_name}"
 )
 tokenizer = WhisperTokenizerFast.from_pretrained(
-    f'mesolitica/malaysian-whisper-{model_name}'
+    f"mesolitica/malaysian-whisper-{model_name}"
 )
 model = WhisperForConditionalGeneration.from_pretrained(
-    f'mesolitica/malaysian-whisper-{model_name}', 
-    dtype = torch.float32,
+    f"mesolitica/malaysian-whisper-{model_name}",
+    dtype=torch.float32,
 ).cpu()
 
-print(f"new token <|transcribeprecise|> is {tokenizer.convert_tokens_to_ids('<|transcribeprecise|>')}")
-print(f"new token <|notimestamps|> is {tokenizer.convert_tokens_to_ids('<|notimestamps|>')}")
- 
+print(
+    f"new token <|transcribeprecise|> is {tokenizer.convert_tokens_to_ids('<|transcribeprecise|>')}"
+)
+print(
+    f"new token <|notimestamps|> is {tokenizer.convert_tokens_to_ids('<|notimestamps|>')}"
+)
+
 print(f"n_mels: {model.config.num_mel_bins}")
 print(f"encoder_layers: {model.config.encoder_layers}")
 print(f"decoder_layers: {model.config.decoder_layers}")
@@ -75,16 +80,18 @@ with torch.no_grad():
     # p = processor([assembly], return_tensors='pt')
     # p['input_features'] = p['input_features'].to(torch.float32)
 
-    feature = compute_feat('./malaysian_test/G5001/G5001_1_S0007.wav', model.config.num_mel_bins)
+    feature = compute_feat(
+        "./malaysian_test/G5001/G5001_1_S0007.wav", model.config.num_mel_bins
+    )
     r = model.generate(
         feature,
         output_scores=True,
         return_dict_in_generate=True,
-        return_timestamps=True, 
-        language='ms',
-        task = 'transcribe',
+        return_timestamps=True,
+        language="ms",
+        task="transcribe",
     )
 
-tokens = r['sequences'][0]
+tokens = r["sequences"][0]
 # print(f"tokens: {tokens}")
 print(tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(tokens)))

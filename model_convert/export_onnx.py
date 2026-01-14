@@ -30,7 +30,10 @@ from whisper.model import (
     ResidualAttentionBlock,
     TextDecoder,
 )
+from transformers import WhisperForConditionalGeneration, WhisperTokenizerFast
 import json
+import base64
+import re
 
 
 def get_args():
@@ -53,6 +56,7 @@ def get_args():
             ],
         # fmt: on
     )
+    parser.add_argument("--repo_id", type=str, required=False, default=None)
     return parser.parse_args()
 
 
@@ -209,8 +213,9 @@ class AudioEncoderTensorCache(nn.Module):
             n_layer_cross_k_list.append(k)
             n_layer_cross_v_list.append(v)
 
-        return torch.stack(n_layer_cross_k_list, dim=0), \
-            torch.stack(n_layer_cross_v_list, dim=0)
+        return torch.stack(n_layer_cross_k_list, dim=0), torch.stack(
+            n_layer_cross_v_list, dim=0
+        )
 
 
 class MultiHeadAttentionCross(nn.Module):
@@ -359,7 +364,7 @@ class TextDecoderTensorCache(nn.Module):
             #  updated_self_kv_pair.append((self_k_cache, self_v_cache))
             this_self_k.append(update_self_k)
             this_self_v.append(update_self_v)
- 
+
             i += 1
 
         x = self.textDecoder.ln(x)
@@ -388,7 +393,7 @@ class TextDecoderTensorCache(nn.Module):
 
 
 # ref: https://github.com/ggerganov/whisper.cpp/blob/master/models/convert-pt-to-ggml.py#L232
-def convert_tokens(name, model):
+def convert_tokens(name, model, new_tokenizer=None, new_tokens=[]):
     whisper_dir = Path(whisper.__file__).parent
     multilingual = model.is_multilingual
     tokenizer = (
@@ -412,146 +417,93 @@ def convert_tokens(name, model):
             for token, rank in (line.split() for line in contents.splitlines() if line)
         }
 
+        if new_tokenizer is not None:
+            for t in new_tokens:
+                b64_str = base64.b64encode(t.encode("utf-8")).decode()
+                tokens[b64_str] = new_tokenizer.convert_tokens_to_ids(t)
+
     with open(f"{name}-tokens.txt", "w") as f:
         for t, i in tokens.items():
             f.write(f"{t} {i}\n")
 
 
+def hf_to_whisper_states(text):
+    text = re.sub(".layers.", ".blocks.", text)
+    text = re.sub(".self_attn.", ".attn.", text)
+    text = re.sub(".q_proj.", ".query.", text)
+    text = re.sub(".k_proj.", ".key.", text)
+    text = re.sub(".v_proj.", ".value.", text)
+    text = re.sub(".out_proj.", ".out.", text)
+    text = re.sub(".fc1.", ".mlp.0.", text)
+    text = re.sub(".fc2.", ".mlp.2.", text)
+    text = re.sub(".fc3.", ".mlp.3.", text)
+    text = re.sub(".fc3.", ".mlp.3.", text)
+    text = re.sub(".encoder_attn.", ".cross_attn.", text)
+    text = re.sub(".cross_attn.ln.", ".cross_attn_ln.", text)
+    text = re.sub(".embed_positions.weight", ".positional_embedding", text)
+    text = re.sub(".embed_tokens.", ".token_embedding.", text)
+    text = re.sub("model.", "", text)
+    text = re.sub("attn.layer_norm.", "attn_ln.", text)
+    text = re.sub(".final_layer_norm.", ".mlp_ln.", text)
+    text = re.sub("encoder.layer_norm.", "encoder.ln_post.", text)
+    text = re.sub("decoder.layer_norm.", "decoder.ln.", text)
+    text = re.sub("proj_out.weight", "decoder.token_embedding.weight", text)
+    return text
+
+
+def convert_hf_to_openai(repo_id, openai_model_type):
+    hf_model = (
+        WhisperForConditionalGeneration.from_pretrained(
+            repo_id,
+            dtype=torch.float32,
+        )
+        .cpu()
+        .eval()
+    )
+
+    # Rename layers
+    hf_state_dict = hf_model.state_dict()
+    for key in list(hf_state_dict.keys()):
+        new_key = hf_to_whisper_states(key)
+        hf_state_dict[new_key] = hf_state_dict.pop(key)
+
+    model = whisper.load_model(openai_model_type)
+
+    if model.dims.n_vocab != hf_model.config.vocab_size:
+        model.dims.n_vocab = hf_model.config.vocab_size
+
+        model = whisper.Whisper(model.dims)
+
+    model.load_state_dict(hf_state_dict)
+    return model
+
+
 @torch.no_grad()
 def main():
     args = get_args()
-    name = args.model
-    print(args)
-    print(name)
+    print(vars(args))
 
     opset_version = 17
-
-    if name == "distil-medium.en":
-        filename = "./distil-medium-en-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-medium.en
-                to download original-model.bin
-                You can use the following command to do that:
-
-                wget -O distil-medium-en-original-model.bin https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/original-model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-large-v2":
-        filename = "./distil-large-v2-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-large-v2
-                to download original-model.bin
-                You can use the following command to do that:
-
-                wget -O distil-large-v2-original-model.bin https://huggingface.co/distil-whisper/distil-large-v2/resolve/main/original-model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-large-v3":
-        filename = "./distil-large-v3-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-large-v3-openai
-                to download model.bin
-                You can use the following command to do that:
-
-                wget -O distil-large-v3-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3-openai/resolve/main/model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-large-v3.5":
-        filename = "./distil-large-v3.5-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-large-v3.5-openai/
-                to download model.bin
-                You can use the following command to do that:
-
-                wget -O distil-large-v3.5-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3.5-openai/resolve/main/model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-small.en":
-        filename = "./distil-small-en-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-small.en
-                to download original-model.bin
-                You can use the following command to do that:
-
-                wget -O distil-small-en-original-model.bin https://huggingface.co/distil-whisper/distil-small.en/resolve/main/original-model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "medium-aishell":
-        filename = "./medium-aishell.pt"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/yuekai/icefall_asr_aishell_whisper/tree/main/exp_medium
-                to download whisper-medium-aishell1-epoch-10-avg-4.pt
-                You can use the following command to do that:
-
-                wget -O medium-aishell.pt https://huggingface.co/yuekai/icefall_asr_aishell_whisper/resolve/main/exp_medium/whisper-medium-aishell1-epoch-10-avg-4.pt
-            """
-            )
-        model = whisper.load_model(filename)
+    if args.repo_id is not None:
+        model = convert_hf_to_openai(args.repo_id, args.model)
     else:
-        model = whisper.load_model(name)
-    model.to("cpu")
+        model = whisper.load_model(args.model)
 
-    num_params = sum(p.numel() for p in model.parameters())
-    num_encoder_params = sum(p.numel() for p in model.encoder.parameters())
-    num_decoder_params = sum(p.numel() for p in model.decoder.parameters())
-    print(f"{name} model parameters: {num_params} (or {num_params/1000/1000} M)")
-    print(
-        f"{name} encoder parameters: {num_encoder_params} (or {num_encoder_params/1000/1000} M)"
-    )
-    print(
-        f"{name} decoder parameters: {num_decoder_params} (or {num_decoder_params/1000/1000} M)"
-    )
+    dims = model.dims
 
-    convert_tokens(name=name, model=model)
-
-    # write tokens
+    convert_tokens(f"{args.model}", model)
 
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual, num_languages=model.num_languages
     )
-    # tiny: <|startoftranscript|><|en|><|transcribe|> (50258, 50259, 50359)
-    # base: <|startoftranscript|><|en|><|transcribe|> (50258, 50259, 50359)
-    # tiny.en: <|startoftranscript|> (50257,)
-    print(tokenizer.decode(tokenizer.sot_sequence), tokenizer.sot_sequence)
-
-    # tiny: <|notimestamps|> 50363
-    # base: <|notimestamps|> 50363
-    # tiny.en: <|notimestamps|> 50362
-    print(tokenizer.decode([tokenizer.no_timestamps]), tokenizer.no_timestamps)
 
     model.eval()
-    print(model.dims)
+    print(dims)
     audio = torch.rand(16000 * 2)
     audio = whisper.pad_or_trim(audio)
     assert audio.shape == (16000 * 30,), audio.shape
 
-    if args.model in ("distil-large-v3", "distil-large-v3.5"):
-        n_mels = 128
-    elif args.model in (
-        "large",
-        "large-v3",
-        "turbo",
-    ):
-        n_mels = 128
-    else:
-        n_mels = 80
+    n_mels = dims.n_mels
 
     mel = (
         whisper.log_mel_spectrogram(audio, n_mels=n_mels).to(model.device).unsqueeze(0)
@@ -562,9 +514,9 @@ def main():
     encoder = AudioEncoderTensorCache(model.encoder, model.decoder)
 
     cross_k, cross_v = encoder(mel)
-    assert cross_k.shape[0] == model.dims.n_text_layer, (
+    assert cross_k.shape[0] == dims.n_text_layer, (
         cross_k.shape[0],
-        model.dims.n_text_layer,
+        dims.n_text_layer,
     )
 
     output_names = ["cross_k", "cross_v"]
@@ -578,7 +530,7 @@ def main():
     if "external_data" in export_sig.parameters:
         kwargs["external_data"] = False
 
-    encoder_filename = f"{name}-encoder.onnx"
+    encoder_filename = f"{args.model}-encoder.onnx"
     torch.onnx.export(
         encoder,
         mel,
@@ -590,42 +542,44 @@ def main():
     )
 
     encoder_meta_data = {
-        "model_type": f"whisper-{name}",
+        "model_type": f"whisper-{args.model}",
+        "repo_id": args.repo_id,
         "version": "1",
         "maintainer": "k2-fsa",
-        "n_mels": model.dims.n_mels,
-        "n_audio_ctx": model.dims.n_audio_ctx,
-        "n_audio_state": model.dims.n_audio_state,
-        "n_audio_head": model.dims.n_audio_head,
-        "n_audio_layer": model.dims.n_audio_layer,
-        "n_vocab": model.dims.n_vocab,
-        "n_text_ctx": model.dims.n_text_ctx,
-        "n_text_state": model.dims.n_text_state,
-        "n_text_head": model.dims.n_text_head,
-        "n_text_layer": model.dims.n_text_layer,
+        "n_mels": dims.n_mels,
+        "n_audio_ctx": dims.n_audio_ctx,
+        "n_audio_state": dims.n_audio_state,
+        "n_audio_head": dims.n_audio_head,
+        "n_audio_layer": dims.n_audio_layer,
+        "n_vocab": dims.n_vocab,
+        "n_text_ctx": dims.n_text_ctx,
+        "n_text_state": dims.n_text_state,
+        "n_text_head": dims.n_text_head,
+        "n_text_layer": dims.n_text_layer,
         "sot_sequence": ",".join(list(map(str, tokenizer.sot_sequence))),
-         "all_language_tokens": ",".join(
-             list(map(str, tokenizer.all_language_tokens))
-         ),  # a list of ids
-         "all_language_codes": ",".join(
-             tokenizer.all_language_codes
-         ),  # e.g., en, de, zh, fr
+        "all_language_tokens": ",".join(
+            list(map(str, tokenizer.all_language_tokens))
+        ),  # a list of ids
+        "all_language_codes": ",".join(
+            tokenizer.all_language_codes
+        ),  # e.g., en, de, zh, fr
         "sot": tokenizer.sot,
         "sot_index": tokenizer.sot_sequence.index(tokenizer.sot),
         "eot": tokenizer.eot,
         "blank_id": tokenizer.encode(" ")[0],
-        "is_multilingual": int(model.is_multilingual),
+        "is_multilingual": 1,
         "no_speech": tokenizer.no_speech,
         "non_speech_tokens": ",".join(list(map(str, tokenizer.non_speech_tokens))),
         "transcribe": tokenizer.transcribe,
         "translate": tokenizer.translate,
+        # "transcribeprecise": hf_tokenizer.convert_tokens_to_ids('<|transcribeprecise|>'),
         "sot_prev": tokenizer.sot_prev,
         "sot_lm": tokenizer.sot_lm,
         "no_timestamps": tokenizer.no_timestamps,
     }
     print(f"encoder_meta_data: {encoder_meta_data}")
     add_meta_data(filename=encoder_filename, meta_data=encoder_meta_data)
-    with open(f"{name}_config.json", "w") as f:
+    with open(f"{args.model}_config.json", "w") as f:
         json.dump(encoder_meta_data, f, indent=4)
 
     if "large" in args.model or "turbo" in args.model:
@@ -640,14 +594,18 @@ def main():
         )
 
     tokens = torch.tensor([[tokenizer.sot]], dtype=torch.int32)
-    decoder = TextDecoderTensorCache(model.decoder, model.dims.n_text_ctx)
+    decoder = TextDecoderTensorCache(model.decoder, dims.n_text_ctx)
 
     batch_size = 1
-    self_k = torch.zeros(model.dims.n_text_layer, batch_size, model.dims.n_text_ctx, model.dims.n_text_state)
-    self_v = torch.zeros(model.dims.n_text_layer, batch_size, model.dims.n_text_ctx, model.dims.n_text_state)
+    self_k = torch.zeros(
+        dims.n_text_layer, batch_size, dims.n_text_ctx, dims.n_text_state
+    )
+    self_v = torch.zeros(
+        dims.n_text_layer, batch_size, dims.n_text_ctx, dims.n_text_state
+    )
 
     offset = torch.zeros(1, dtype=torch.int32)
-    mask = causal_mask_1d(offset.item(), model.dims.n_text_ctx)
+    mask = causal_mask_1d(offset.item(), dims.n_text_ctx)
 
     logits, this_self_k, this_self_v = decoder(
         tokens,
@@ -659,17 +617,25 @@ def main():
         mask,
     )
 
-    assert logits.shape == (batch_size, tokens.shape[1], model.dims.n_vocab)
-    assert self_k.shape[0] == model.dims.n_text_layer, (
-        self_k.shape[0] ,
-        model.dims.n_text_layer,
+    assert logits.shape == (batch_size, tokens.shape[1], dims.n_vocab)
+    assert self_k.shape[0] == dims.n_text_layer, (
+        self_k.shape[0],
+        dims.n_text_layer,
     )
 
-    input_names = [f"tokens", "self_k", "self_v", "cross_k", "cross_v", "offset", "mask"]
+    input_names = [
+        f"tokens",
+        "self_k",
+        "self_v",
+        "cross_k",
+        "cross_v",
+        "offset",
+        "mask",
+    ]
 
     output_names = [f"logits", "this_self_k", "this_self_v"]
 
-    decoder_filename = f"{name}-decoder.onnx"
+    decoder_filename = f"{args.model}-decoder.onnx"
     torch.onnx.export(
         decoder,
         (
@@ -719,7 +685,7 @@ if __name__ == "__main__":
         main()
 
 
-'''
+"""
 Usage:
-python3 ./export_onnx.py --model tiny
-'''
+python3 export_onnx.py --model tiny
+"""

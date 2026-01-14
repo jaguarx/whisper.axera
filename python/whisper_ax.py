@@ -34,8 +34,6 @@ class WhisperConfig:
 
 class Whisper:
     def __init__(self, model_type: str, model_path: str, language: str, task: str):
-        assert task in ["translate", "transcribe"]
-
         self.language = language
         self.task = task
         self.encoder, self.decoder, self.tokenizer, model_config = self.load_model(
@@ -81,6 +79,16 @@ class Whisper:
         )
 
         self.id2token = self.load_tokens(required_files[3])
+        self.lang2token = {
+            k: v
+            for k, v in zip(
+                model_config["all_language_codes"], model_config["all_language_tokens"]
+            )
+        }
+        self.task2token = {
+            "transcribe": model_config["transcribe"],
+            "translate": model_config["translate"],
+        }
 
         return encoder, decoder, tokenizer, model_config
 
@@ -109,6 +117,7 @@ class Whisper:
         task_token = (
             config.transcribe if self.task == "transcribe" else config.translate
         )
+
         config.sot_sequence = np.array(
             [config.sot, lang_token, task_token, config.no_timestamps], dtype=np.int32
         )
@@ -126,7 +135,9 @@ class Whisper:
     def load_audio(self, audio: str):
         samples, sample_rate = librosa.load(audio, sr=self.config.sample_rate)
         if sample_rate != self.config.sample_rate:
-            samples = librosa.resample(samples, orig_sr=sample_rate, target_sr=self.config.sample_rate)
+            samples = librosa.resample(
+                samples, orig_sr=sample_rate, target_sr=self.config.sample_rate
+            )
 
         samples = np.ascontiguousarray(samples)
         return samples, self.config.sample_rate
@@ -195,10 +206,22 @@ class Whisper:
         batch_size = 1
 
         self_k = np.zeros(
-            (self.config.n_text_layer, batch_size, self.config.n_text_ctx, self.config.n_text_state), dtype=np.float32
+            (
+                self.config.n_text_layer,
+                batch_size,
+                self.config.n_text_ctx,
+                self.config.n_text_state,
+            ),
+            dtype=np.float32,
         )
         self_v = np.zeros(
-            (self.config.n_text_layer, batch_size, self.config.n_text_ctx, self.config.n_text_state), dtype=np.float32
+            (
+                self.config.n_text_layer,
+                batch_size,
+                self.config.n_text_ctx,
+                self.config.n_text_state,
+            ),
+            dtype=np.float32,
         )
         return self_k, self_v
 
@@ -213,12 +236,7 @@ class Whisper:
             mask[:n] = 0
         return mask
 
-    def run(self, audio: Union[str, np.ndarray]) -> str:
-        if isinstance(audio, str):
-            audio, sample_rate = self.load_audio(audio)
-
-        mel = self.compute_feature(audio)
-
+    def run_mel(self, mel):
         cross_k, cross_v = self.run_encoder(mel)
 
         self_k, self_v = self.get_self_cache()
@@ -228,7 +246,9 @@ class Whisper:
             token = np.array([[t]], dtype=np.int32)  # sot
             mask = self.causal_mask_1d(offset.item(), self.config.n_text_ctx)
 
-            logits, this_self_k, this_self_v = self.run_decoder([token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask])
+            logits, this_self_k, this_self_v = self.run_decoder(
+                [token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask]
+            )
 
             self_k[:, :, offset.item() : offset.item() + 1, :] = this_self_k
             self_v[:, :, offset.item() : offset.item() + 1, :] = this_self_v
@@ -247,7 +267,9 @@ class Whisper:
 
             mask = self.causal_mask_1d(offset.item(), self.config.n_text_ctx)
 
-            logits, this_self_k, this_self_v = self.run_decoder([token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask])
+            logits, this_self_k, this_self_v = self.run_decoder(
+                [token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask]
+            )
 
             self_k[:, :, offset.item() : offset.item() + 1, :] = this_self_k
             self_v[:, :, offset.item() : offset.item() + 1, :] = this_self_v
@@ -272,3 +294,19 @@ class Whisper:
                 return text
 
         return text
+
+    def run(
+        self, audio: Union[str, np.ndarray], language: str = None, task: str = None
+    ) -> str:
+        if isinstance(audio, str):
+            audio, sample_rate = self.load_audio(audio)
+
+        mel = self.compute_feature(audio)
+
+        if language is not None and self.language != language:
+            self.config.sot_sequence[1] = self.lang2token(language)
+
+        if task is not None and self.task != task:
+            self.config.sot_sequence[2] = self.task2token(task)
+
+        return self.run_mel(mel)

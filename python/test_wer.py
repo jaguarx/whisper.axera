@@ -3,14 +3,19 @@ import os
 import logging
 import re
 import pandas as pd
-from whisper import Whisper
+import whisper
+from typing import List, Union, Tuple
+import numpy as np
+import torch
+import soundfile as sf
+import zhconv
 
 
-def setup_logging():
+def setup_logging(filename):
     """配置日志系统，同时输出到控制台和文件"""
     # 获取脚本所在目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_file = os.path.join(script_dir, "test_wer.log")
+    log_file = os.path.join(script_dir, f"{filename}.log")
 
     # 配置日志格式
     log_format = "%(asctime)s - %(levelname)s - %(message)s"
@@ -41,6 +46,34 @@ def setup_logging():
     logger.addHandler(console_handler)
 
     return logger
+
+
+def load_audio(filename: str) -> Tuple[np.ndarray, int]:
+    data, sample_rate = sf.read(
+        filename,
+        always_2d=True,
+        dtype="float32",
+    )
+    data = data[:, 0]  # use only the first channel
+    samples = np.ascontiguousarray(data)
+    return samples, sample_rate
+
+
+def compute_feat(filename: str, n_mels: int):
+    wave, sample_rate = load_audio(filename)
+    if sample_rate != 16000:
+        import librosa
+
+        wave = librosa.resample(wave, orig_sr=sample_rate, target_sr=16000)
+        sample_rate = 16000
+
+    audio = whisper.pad_or_trim(wave)
+    assert audio.shape == (16000 * 30,), audio.shape
+
+    mel = whisper.log_mel_spectrogram(audio, n_mels=n_mels).unsqueeze(0)
+    assert mel.shape == (1, n_mels, 3000), mel.shape
+
+    return mel.to(torch.float32)
 
 
 class AIShellDataset:
@@ -150,7 +183,6 @@ class CommonVoiceDataset:
         return len(self.data)
 
 
-
 class CustomDataset:
     """自定义数据集解析器"""
 
@@ -167,10 +199,12 @@ class CustomDataset:
 
         # 加载csv
         self.data = []
-        df = pd.read_csv(label_path, sep='\t')
+        df = pd.read_csv(label_path, sep="\t")
         for i, row in df.iterrows():
-            audio_path = os.path.join(self.dataset_dir, row['SPEAKER_ID'], row['UTTRANS_ID'])
-            gt = row['TRANSCRIPTION']
+            audio_path = os.path.join(
+                self.dataset_dir, row["SPEAKER_ID"], row["UTTRANS_ID"]
+            )
+            gt = row["TRANSCRIPTION"]
             self.data.append({"audio_path": audio_path, "gt": gt})
 
         # 使用logging而不是print
@@ -197,7 +231,7 @@ class CustomDataset:
     def __len__(self):
         """返回数据集大小"""
         return len(self.data)
-    
+
 
 def get_args():
     parser = argparse.ArgumentParser(prog="whisper", description="Test WER on dataset")
@@ -236,6 +270,9 @@ def get_args():
         help="model path for *.axmodel, tokens.txt",
     )
     parser.add_argument(
+        "--repo_id", type=str, default=None, help="repo id from huggingface"
+    )
+    parser.add_argument(
         "--language",
         "-l",
         type=str,
@@ -243,17 +280,16 @@ def get_args():
         default="zh",
         help="Target language, support en, zh, ja, and others. See languages.py for more options.",
     )
+    parser.add_argument(
+        "--backend", type=str, default="ax", choices=["ax", "torch", "onnx"]
+    )
+    parser.add_argument("--log_name", type=str, default="test_wer")
     return parser.parse_args()
 
 
 def print_args(args):
     logger = logging.getLogger()
-    logger.info(f"dataset: {args.dataset}")
-    logger.info(f"gt_path: {args.gt_path}")
-    logger.info(f"max_num: {args.max_num}")
-    logger.info(f"model_type: {args.model_type}")
-    logger.info(f"model_path: {args.model_path}")
-    logger.info(f"language: {args.language}")
+    logger.info(vars(args))
 
 
 def min_distance(word1: str, word2: str) -> int:
@@ -297,10 +333,10 @@ def remove_punctuation(text):
 
 
 def main():
-    # 设置日志系统
-    logger = setup_logging()
-
     args = get_args()
+
+    # 设置日志系统
+    logger = setup_logging(args.log_name)
     print_args(args)
 
     dataset_type = args.dataset.lower()
@@ -316,22 +352,80 @@ def main():
     max_num = args.max_num
 
     # Load model
-    model = Whisper(args.model_type, args.model_path, args.language, "transcribe")
+    use_hf_model = False
+    tokenizer = None
+    task = "transcribe"
+
+    if args.backend == "ax":
+        from whisper_ax import Whisper
+
+        model = Whisper(args.model_type, args.model_path, args.language, task)
+    elif args.backend == "torch":
+        if args.repo_id is not None:
+            use_hf_model = True
+
+            from transformers import WhisperForConditionalGeneration
+            import torch
+
+            model = WhisperForConditionalGeneration.from_pretrained(
+                args.repo_id,
+                dtype=torch.float32,
+            ).cpu()
+        else:
+            model = whisper.load_model(args.model_type).cpu()
+
+        tokenizer = whisper.tokenizer.get_tokenizer(multilingual=True)
+    elif args.backend == "onnx":
+        import onnxruntime as ort
+        from ..model_convert.generate_data import OnnxModel
+
+        encoder_path = os.path.join(
+            args.model_path, f"{args.model_type}/{args.model_type}-encoder.onnx"
+        )
+        decoder_path = os.path.join(
+            args.model_path, f"{args.model_type}/{args.model_type}-decoder.onnx"
+        )
+        model = OnnxModel(encoder_path, decoder_path)
 
     # Iterate over dataset
     references = []
     hyp = []
     all_character_error_num = 0
     all_character_num = 0
-    wer_file = open("wer.txt", "w")
     max_data_num = max_num if max_num > 0 else len(dataset)
     for n, (audio_path, reference) in enumerate(dataset):
-        hypothesis = model.run(audio_path)
+        if args.backend == "ax":
+            hypothesis = model.run(audio_path)
+        elif args.backend == "torch":
+            if use_hf_model:
+                with torch.no_grad():
+                    feature = compute_feat(audio_path, model.config.num_mel_bins)
+                    r = model.generate(
+                        feature,
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                        return_timestamps=False,
+                        language=args.language,
+                        task="transcribe",
+                    )
 
-        hypothesis = remove_punctuation(hypothesis)
-        reference = remove_punctuation(reference)
+                tokens = r["sequences"][0][4:-1]
+                hypothesis = "".join(tokenizer.decode(tokens)).strip()
+            else:
+                result = model.transcribe(
+                    audio_path, fp16=False, language=args.language
+                )
+                hypothesis = result["text"]
+                if args.language == "zh":
+                    hypothesis = zhconv.convert(hypothesis, "zh-hans")
 
-        character_error_num = min_distance(reference.lower(), hypothesis.lower())
+        elif args.backend == "onnx":
+            hypothesis = model.run(audio_path, args.language, task)
+
+        hypothesis = remove_punctuation(hypothesis).lower()
+        reference = remove_punctuation(reference).lower()
+
+        character_error_num = min_distance(reference, hypothesis)
         character_num = len(reference)
         character_error_rate = character_error_num / character_num * 100
 
@@ -342,7 +436,6 @@ def main():
         references.append(reference)
 
         line_content = f"({n+1}/{max_data_num}) {os.path.basename(audio_path)}  gt: {reference}  predict: {hypothesis}  WER: {character_error_rate}%"
-        wer_file.write(line_content + "\n")
         logger.info(line_content)
 
         if n + 1 >= max_data_num:
@@ -351,8 +444,6 @@ def main():
     total_character_error_rate = all_character_error_num / all_character_num * 100
 
     logger.info(f"Total WER: {total_character_error_rate}%")
-    wer_file.write(f"Total WER: {total_character_error_rate}%")
-    wer_file.close()
 
 
 if __name__ == "__main__":

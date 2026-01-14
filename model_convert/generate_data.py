@@ -11,7 +11,7 @@ import csv
 import random
 import re
 import zhconv
-from typing import Tuple, List
+from typing import Tuple, List, Union
 
 import kaldi_native_fbank as knf
 import numpy as np
@@ -31,6 +31,44 @@ from transformers import (
     WhisperTokenizerFast,
 )
 
+
+def load_tokens(filename):
+    tokens = dict()
+    with open(filename, "r") as f:
+        for line in f:
+            t, i = line.split()
+            tokens[int(i)] = t
+    return tokens
+
+
+def load_audio(filename: str) -> Tuple[np.ndarray, int]:
+    data, sample_rate = sf.read(
+        filename,
+        always_2d=True,
+        dtype="float32",
+    )
+    data = data[:, 0]  # use only the first channel
+    samples = np.ascontiguousarray(data)
+    return samples, sample_rate
+
+
+def compute_feat(filename: str, n_mels: int):
+    wave, sample_rate = load_audio(filename)
+    if sample_rate != 16000:
+        import librosa
+
+        wave = librosa.resample(wave, orig_sr=sample_rate, target_sr=16000)
+        sample_rate = 16000
+
+    audio = whisper.pad_or_trim(wave)
+    assert audio.shape == (16000 * 30,), audio.shape
+
+    mel = whisper.log_mel_spectrogram(audio, n_mels=n_mels).unsqueeze(0)
+    assert mel.shape == (1, n_mels, 3000), mel.shape
+
+    return mel
+
+
 class OnnxModel:
     def __init__(
         self,
@@ -45,6 +83,8 @@ class OnnxModel:
 
         self.init_encoder(encoder)
         self.init_decoder(decoder)
+
+        self.tokenizer = whisper.tokenizer.get_tokenizer(multilingual=True)
 
     def init_encoder(self, encoder: str):
         self.encoder = ort.InferenceSession(
@@ -87,8 +127,8 @@ class OnnxModel:
         self.id2lang = dict(zip(self.all_language_tokens, self.all_language_codes))
         self.task_id_map = {
             # 'transcribeprecise': int(meta['transcribeprecise']),
-            'transcribe': int(meta['transcribe']),
-            'translate': int(meta['translate'])
+            "transcribe": int(meta["transcribe"]),
+            "translate": int(meta["translate"]),
         }
 
     def init_decoder(self, decoder: str):
@@ -140,52 +180,93 @@ class OnnxModel:
         batch_size = 1
 
         self_k = np.zeros(
-            (self.n_text_layer, batch_size, self.n_text_ctx, self.n_text_state), dtype=np.float32
+            (self.n_text_layer, batch_size, self.n_text_ctx, self.n_text_state),
+            dtype=np.float32,
         )
         self_v = np.zeros(
-            (self.n_text_layer, batch_size, self.n_text_ctx, self.n_text_state), dtype=np.float32
+            (self.n_text_layer, batch_size, self.n_text_ctx, self.n_text_state),
+            dtype=np.float32,
         )
         return self_k, self_v
 
+    def causal_mask_1d(self, n: int, L: int, device=None, dtype=torch.int32):
+        """
+        Returns a 1-D int mask of shape (L,) with:
+        0 -> allowed
+        1 -> masked (will be converted to -inf later)
+        """
+        mask = torch.ones((L,), device=device, dtype=dtype)
+        if n > 0:
+            mask[:n] = 0
+        return mask
 
-def load_tokens(filename):
-    tokens = dict()
-    with open(filename, "r") as f:
-        for line in f:
-            t, i = line.split()
-            tokens[int(i)] = t
-    return tokens
+    def run_mel(self, mel, language="zh", task="transcribe"):
+        self.sot_sequence[0] = self.sot
+        self.sot_sequence[1] = self.lang2id[language]
+        self.sot_sequence[2] = self.task_id_map[task]
+        self.sot_sequence[3] = self.no_timestamps
+
+        cross_k, cross_v = self.run_encoder(mel)
+
+        self_k, self_v = self.get_self_cache()
+
+        offset = np.array([0], dtype=np.int32)
+        for t in self.sot_sequence:
+            token = np.array([[t]], dtype=np.int32)  # sot
+            mask = self.causal_mask_1d(offset.item(), self.n_text_ctx).numpy()
+
+            logits, this_self_k, this_self_v = self.run_decoder(
+                [token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask]
+            )
+
+            self_k[:, :, offset.item() : offset.item() + 1, :] = this_self_k
+            self_v[:, :, offset.item() : offset.item() + 1, :] = this_self_v
+
+            offset += 1
+
+        idx = logits[0, 0].argmax()
+
+        ans = []
+
+        while idx != self.eot and offset.item() < self.n_text_ctx:
+            ans.append(idx)
+            token = np.array([[idx]], dtype=np.int32)  # no_timestamps
+
+            self_k[:, :, offset.item() : offset.item() + 1, :] = this_self_k
+            self_v[:, :, offset.item() : offset.item() + 1, :] = this_self_v
+
+            mask = self.causal_mask_1d(offset.item(), self.n_text_ctx).numpy()
+
+            logits, this_self_k, this_self_v = self.run_decoder(
+                [token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask]
+            )
+            idx = logits[0, 0].argmax()
+
+            offset += 1
+
+        text = "".join(self.tokenizer.decode(ans)).strip()
+        return text
+
+    def run(
+        self, audio: Union[str, np.ndarray], language: str = None, task: str = None
+    ) -> str:
+        if isinstance(audio, str):
+            audio, sample_rate = load_audio(audio)
+
+        mel = compute_feat(audio, n_mels=self.n_mels).numpy()
+
+        if language is not None and self.language != language:
+            self.sot_sequence[1] = self.lang2token(language)
+
+        if task is not None and self.task != task:
+            self.sot_sequence[2] = self.task2token(task)
+
+        return self.run_mel(mel)
 
 
-def load_audio(filename: str) -> Tuple[np.ndarray, int]:
-    data, sample_rate = sf.read(
-        filename,
-        always_2d=True,
-        dtype="float32",
-    )
-    data = data[:, 0]  # use only the first channel
-    samples = np.ascontiguousarray(data)
-    return samples, sample_rate
-
-
-def compute_feat(filename: str, n_mels: int):
-    wave, sample_rate = load_audio(filename)
-    if sample_rate != 16000:
-        import librosa
-
-        wave = librosa.resample(wave, orig_sr=sample_rate, target_sr=16000)
-        sample_rate = 16000
-
-    audio = whisper.pad_or_trim(wave)
-    assert audio.shape == (16000 * 30,), audio.shape
-
-    mel = whisper.log_mel_spectrogram(audio, n_mels=n_mels).unsqueeze(0)
-    assert mel.shape == (1, n_mels, 3000), mel.shape
-
-    return mel
-
-
-def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task: str, tokenizer):
+def forward(
+    model_type: str, model: OnnxModel, sound_file: str, lang: str, task: str, tokenizer
+):
     name = os.path.splitext(os.path.basename(sound_file))[0]
 
     model.sot_sequence[0] = model.sot
@@ -200,7 +281,7 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task:
     np.save(f"./calibrations_{model_type}/encoder/mel/{name}.npy", mel)
 
     cross_k, cross_v = model.run_encoder(mel)
-    
+
     self_k, self_v = model.get_self_cache()
 
     offset = np.array([0], dtype=np.int32)
@@ -216,16 +297,37 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task:
         os.makedirs(f"calibrations_{model_type}/decoder/cross_k", exist_ok=True)
         os.makedirs(f"calibrations_{model_type}/decoder/cross_v", exist_ok=True)
 
-        np.save(f"calibrations_{model_type}/decoder/tokens/{name}_{offset.item()}.npy", token)
-        np.save(f"calibrations_{model_type}/decoder/offset/{name}_{offset.item()}.npy", offset)
-        np.save(f"calibrations_{model_type}/decoder/mask/{name}_{offset.item()}.npy", mask)
-        np.save(f"calibrations_{model_type}/decoder/self_k/{name}_{offset.item()}.npy", self_k)
-        np.save(f"calibrations_{model_type}/decoder/self_v/{name}_{offset.item()}.npy", self_v)
-        np.save(f"calibrations_{model_type}/decoder/cross_k/{name}_{offset.item()}.npy", cross_k)
-        np.save(f"calibrations_{model_type}/decoder/cross_v/{name}_{offset.item()}.npy", cross_v)
+        np.save(
+            f"calibrations_{model_type}/decoder/tokens/{name}_{offset.item()}.npy",
+            token,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/offset/{name}_{offset.item()}.npy",
+            offset,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/mask/{name}_{offset.item()}.npy", mask
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/self_k/{name}_{offset.item()}.npy",
+            self_k,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/self_v/{name}_{offset.item()}.npy",
+            self_v,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/cross_k/{name}_{offset.item()}.npy",
+            cross_k,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/cross_v/{name}_{offset.item()}.npy",
+            cross_v,
+        )
 
-
-        logits, this_self_k, this_self_v = model.run_decoder([token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask])
+        logits, this_self_k, this_self_v = model.run_decoder(
+            [token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask]
+        )
 
         self_k[:, :, offset.item() : offset.item() + 1, :] = this_self_k
         self_v[:, :, offset.item() : offset.item() + 1, :] = this_self_v
@@ -245,15 +347,37 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task:
 
         mask = causal_mask_1d(offset.item(), model.n_text_ctx).numpy()
 
-        np.save(f"calibrations_{model_type}/decoder/tokens/{name}_{offset.item()}.npy", token)
-        np.save(f"calibrations_{model_type}/decoder/offset/{name}_{offset.item()}.npy", offset)
-        np.save(f"calibrations_{model_type}/decoder/mask/{name}_{offset.item()}.npy", mask)
-        np.save(f"calibrations_{model_type}/decoder/self_k/{name}_{offset.item()}.npy", self_k)
-        np.save(f"calibrations_{model_type}/decoder/self_v/{name}_{offset.item()}.npy", self_v)
-        np.save(f"calibrations_{model_type}/decoder/cross_k/{name}_{offset.item()}.npy", cross_k)
-        np.save(f"calibrations_{model_type}/decoder/cross_v/{name}_{offset.item()}.npy", cross_v)
+        np.save(
+            f"calibrations_{model_type}/decoder/tokens/{name}_{offset.item()}.npy",
+            token,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/offset/{name}_{offset.item()}.npy",
+            offset,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/mask/{name}_{offset.item()}.npy", mask
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/self_k/{name}_{offset.item()}.npy",
+            self_k,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/self_v/{name}_{offset.item()}.npy",
+            self_v,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/cross_k/{name}_{offset.item()}.npy",
+            cross_k,
+        )
+        np.save(
+            f"calibrations_{model_type}/decoder/cross_v/{name}_{offset.item()}.npy",
+            cross_v,
+        )
 
-        logits, this_self_k, this_self_v = model.run_decoder([token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask])
+        logits, this_self_k, this_self_v = model.run_decoder(
+            [token] + [self_k, self_v] + [cross_k, cross_v] + [offset, mask]
+        )
         idx = logits[0, 0].argmax()
 
         offset += 1
@@ -261,8 +385,7 @@ def forward(model_type: str, model: OnnxModel, sound_file: str, lang: str, task:
     print(f"\n{name} result:")
     print(ans)
 
-    text = "".join(tokenizer.decode(ans)).strip()
-    # text = tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(ans))
+    text = "".join(model.tokenizer.decode(ans)).strip()
     print(text)
 
 
@@ -270,51 +393,43 @@ def main():
     args = get_args()
     print(args)
     model_type = args.model
-    task = 'transcribe'
+    task = "transcribe"
 
-    openai_name = args.model.split('-')[0]
-    torch_model = whisper.load_model(openai_name)
-    tokenizer = whisper.tokenizer.get_tokenizer(
-        torch_model.is_multilingual, num_languages=torch_model.num_languages
-    )
-    # tokenizer = WhisperTokenizerFast.from_pretrained(
-    #     'mesolitica/Malaysian-whisper-large-v3-turbo-v3'
-    # )
-
-    model = OnnxModel(f"./malaysian-{args.model}-encoder.onnx", f"./malaysian-{args.model}-decoder.onnx")
+    model = OnnxModel(f"./{args.model}-encoder.onnx", f"./{args.model}-decoder.onnx")
 
     dataset = {
         # 'en': ['example/en.mp3'],
         # 'ja': ['example/ja.mp3'],
         # 'ko': ['example/ko.mp3'],
         # 'zh': ['example/zh.mp3'],
-        'ms': [
-               './malaysian_test/G5001/G5001_1_S0002.wav', 
-               './malaysian_test/G5001/G5001_1_S0003.wav',
-               './malaysian_test/G5001/G5001_1_S0005.wav',
-               './malaysian_test/G5001/G5001_1_S0006.wav',
-               './malaysian_test/G5001/G5001_1_S0007.wav',
-              ]
+        "ms": [
+            "./malaysian_test/G5001/G5001_1_S0002.wav",
+            "./malaysian_test/G5001/G5001_1_S0003.wav",
+            "./malaysian_test/G5001/G5001_1_S0005.wav",
+            "./malaysian_test/G5001/G5001_1_S0006.wav",
+            "./malaysian_test/G5001/G5001_1_S0007.wav",
+        ]
     }
 
     dataset_num = sum(len(v) for v in dataset.values())
-    assert dataset_num > 0, 'dataset is empty'
+    assert dataset_num > 0, "dataset is empty"
     print(f"Generating data, total {dataset_num}")
     gen_num = 0
     for lang in dataset.keys():
         for sound_path in dataset[lang]:
-            forward(model_type, model, sound_path, lang, task, tokenizer)
+            forward(model_type, model, sound_path, lang, task)
 
             gen_num += 1
 
-    tar_dirs = [f"calibrations_{model_type}/encoder/mel", 
-                f"calibrations_{model_type}/decoder/tokens",
-                f"calibrations_{model_type}/decoder/mask",
-                f"calibrations_{model_type}/decoder/offset", 
-                f"calibrations_{model_type}/decoder/self_k",
-                f"calibrations_{model_type}/decoder/self_v",
-                f"calibrations_{model_type}/decoder/cross_k",
-                f"calibrations_{model_type}/decoder/cross_v"
+    tar_dirs = [
+        f"calibrations_{model_type}/encoder/mel",
+        f"calibrations_{model_type}/decoder/tokens",
+        f"calibrations_{model_type}/decoder/mask",
+        f"calibrations_{model_type}/decoder/offset",
+        f"calibrations_{model_type}/decoder/self_k",
+        f"calibrations_{model_type}/decoder/self_v",
+        f"calibrations_{model_type}/decoder/cross_k",
+        f"calibrations_{model_type}/decoder/cross_v",
     ]
 
     for td in tar_dirs:
@@ -327,6 +442,7 @@ def main():
 
     # save ax config
     import json
+
     ax_config = json.load(open("config_whisper_encoder_u16.json"))
     ax_config["quant"]["input_configs"] = []
     for inp in model.encoder.get_inputs():
@@ -336,7 +452,7 @@ def main():
                 "tensor_name": name,
                 "calibration_dataset": f"./calibrations_{model_type}/encoder/{name}.tar.gz",
                 "calibration_size": -1,
-                "calibration_format": "Numpy"
+                "calibration_format": "Numpy",
             }
         )
 
@@ -353,19 +469,19 @@ def main():
                 "tensor_name": name,
                 "calibration_dataset": f"./calibrations_{model_type}/decoder/{name}.tar.gz",
                 "calibration_size": -1,
-                "calibration_format": "Numpy"
+                "calibration_format": "Numpy",
             }
         )
-        
+
     with open(f"config_whisper_{model_type}_decoder.json", "w") as f:
         json.dump(ax_config, f, indent=4)
     print(f"Dump config to config_whisper_{model_type}_decoder.json")
-    
+
 
 if __name__ == "__main__":
     main()
 
-'''
+"""
 Usage:
 python3 ./generate_data.py --model tiny
-'''
+"""
