@@ -13,6 +13,11 @@ OpenAI Whisper on Axera
 
 - 如需自行转换请参考[模型转换](/model_convert/README.md)
 
+## Update
+
+ - 2026/01/14: 更简单的模型结构，现在只需要encoder和decoder，去掉原来的decoder_main和decoder_loop；支持来自HuggingFace的模型导出
+
+
 ## 支持平台
 
 - [x] AX650N

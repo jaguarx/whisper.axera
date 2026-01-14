@@ -18,6 +18,10 @@ This project provides an optimized implementation of OpenAI's Whisper speech rec
 - **Optimized Performance**: Specially optimized for Axera NPU acceleration
 - **Easy Deployment**: Pre-built packages and cross-compilation support
 
+## Update
+
+ - 2026/01/14: We provide cleaner model architecture now.(With encoder and decoder instead of decoder_main and decoder_loop). Support exporting models from huggingface.
+
 ## Supported Platforms
 
 - ✅ AX650N
