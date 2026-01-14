@@ -3,12 +3,11 @@ import os
 import logging
 import re
 import pandas as pd
-import whisper
-from typing import List, Union, Tuple
+from typing import Tuple
 import numpy as np
-import torch
 import soundfile as sf
 import zhconv
+import librosa
 
 
 def setup_logging(filename):
@@ -55,25 +54,52 @@ def load_audio(filename: str) -> Tuple[np.ndarray, int]:
         dtype="float32",
     )
     data = data[:, 0]  # use only the first channel
+    if sample_rate != 16000:
+        wave = librosa.resample(wave, orig_sr=sample_rate, target_sr=16000)
+        sample_rate = 16000
     samples = np.ascontiguousarray(data)
     return samples, sample_rate
 
 
-def compute_feat(filename: str, n_mels: int):
-    wave, sample_rate = load_audio(filename)
+def compute_feat(filename: str, n_mels: int = 80):
+    audio, sample_rate = load_audio(filename)
     if sample_rate != 16000:
-        import librosa
-
-        wave = librosa.resample(wave, orig_sr=sample_rate, target_sr=16000)
+        audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=16000)
         sample_rate = 16000
 
-    audio = whisper.pad_or_trim(wave)
-    assert audio.shape == (16000 * 30,), audio.shape
+    mel = librosa.feature.melspectrogram(
+        y=audio,
+        sr=sample_rate,
+        n_fft=480,
+        hop_length=160,
+        window="hann",
+        center=True,
+        pad_mode="reflect",
+        power=2.0,
+        n_mels=n_mels,
+    )
 
-    mel = whisper.log_mel_spectrogram(audio, n_mels=n_mels).unsqueeze(0)
-    assert mel.shape == (1, n_mels, 3000), mel.shape
+    log_spec = np.log10(np.maximum(mel, 1e-10))
+    log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
+    mel = (log_spec + 4.0) / 4.0
 
-    return mel.to(torch.float32)
+    target = 3000
+    if mel.shape[1] > target:
+        # -50 so that there are some zero tail paddings.
+        mel = mel[:, :target]
+        mel[:, -50:] = 0
+
+    # We don't need to pad it to 30 seconds now!
+    if mel.shape[1] < target:
+        mel = np.concatenate(
+            (
+                mel,
+                np.zeros((n_mels, target - mel.shape[1]), dtype=np.float32),
+            ),
+            axis=-1,
+        )
+
+    return mel[np.newaxis, ...]
 
 
 class AIShellDataset:
@@ -372,6 +398,8 @@ def main():
                 dtype=torch.float32,
             ).cpu()
         else:
+            import whisper
+
             model = whisper.load_model(args.model_type).cpu()
 
         tokenizer = whisper.tokenizer.get_tokenizer(multilingual=True)
@@ -401,7 +429,7 @@ def main():
                 with torch.no_grad():
                     feature = compute_feat(audio_path, model.config.num_mel_bins)
                     r = model.generate(
-                        feature,
+                        torch.from_numpy(feature),
                         output_scores=True,
                         return_dict_in_generate=True,
                         return_timestamps=False,
