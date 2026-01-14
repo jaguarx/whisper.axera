@@ -5,32 +5,18 @@ Please first run ./export-onnx_ax_loop.py
 before you run this script
 """
 import os
-import argparse
-import base64
-import csv
-import random
-import re
-import zhconv
 from typing import Tuple, List, Union
 
-import kaldi_native_fbank as knf
 import numpy as np
 import onnxruntime as ort
 import soundfile as sf
 import torch
 import tarfile
 import glob
-from tqdm import tqdm
-import librosa
 import soundfile as sf
 import torch
 import whisper
-from export_onnx import causal_mask_1d
-from export_malaysian import get_args
-from transformers import (
-    WhisperTokenizerFast,
-)
-
+from export_onnx import causal_mask_1d, get_args
 
 def load_tokens(filename):
     tokens = dict()
@@ -265,7 +251,7 @@ class OnnxModel:
 
 
 def forward(
-    model_type: str, model: OnnxModel, sound_file: str, lang: str, task: str, tokenizer
+    model_type: str, model: OnnxModel, sound_file: str, lang: str, task: str
 ):
     name = os.path.splitext(os.path.basename(sound_file))[0]
 
@@ -273,7 +259,7 @@ def forward(
     model.sot_sequence[1] = model.lang2id[lang]
     model.sot_sequence[2] = model.task_id_map[task]
     model.sot_sequence[3] = model.no_timestamps
-    print("sot sequence", model.sot_sequence)
+    # print("sot sequence", model.sot_sequence)
 
     mel = compute_feat(sound_file, n_mels=model.n_mels).numpy()
 
@@ -398,17 +384,10 @@ def main():
     model = OnnxModel(f"./{args.model}-encoder.onnx", f"./{args.model}-decoder.onnx")
 
     dataset = {
-        # 'en': ['example/en.mp3'],
-        # 'ja': ['example/ja.mp3'],
-        # 'ko': ['example/ko.mp3'],
-        # 'zh': ['example/zh.mp3'],
-        "ms": [
-            "./malaysian_test/G5001/G5001_1_S0002.wav",
-            "./malaysian_test/G5001/G5001_1_S0003.wav",
-            "./malaysian_test/G5001/G5001_1_S0005.wav",
-            "./malaysian_test/G5001/G5001_1_S0006.wav",
-            "./malaysian_test/G5001/G5001_1_S0007.wav",
-        ]
+        'en': ['example/en.mp3'],
+        'ja': ['example/ja.mp3'],
+        'ko': ['example/ko.mp3'],
+        'zh': ['example/zh.mp3'],
     }
 
     dataset_num = sum(len(v) for v in dataset.values())
