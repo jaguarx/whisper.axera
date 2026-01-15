@@ -326,13 +326,10 @@ class TextDecoderTensorCache(nn.Module):
     ) -> Tuple[Tensor, List[Tuple[Tensor, Tensor]]]:
         """
         tokens: (batch_size, 1)
-        self_kv_pair:
-            - [i][0]: layer_i_self_k_cache, (batch_size, 448, dim)
-            - [i][1]: layer_i_self_v_cache, (batch_size, 448, dim)
         self_k self_v: (n_text_layer, batch_size, n_text_ctx, n_text_state)
         cross_k cross_v: (n_audio_layer, batch_size, n_audio_ctx, n_audio_state)
         Returns:
-          - logits
+          - logits: (1, 1, n_vocab)
           - this_self_kv_pair
         """
         assert tokens.shape == (1, 1), tokens.shape
@@ -537,7 +534,7 @@ def main():
         mel,
         encoder_filename,
         opset_version=opset_version,
-        input_names=["mel"],
+        input_names=[f"{args.model}-mel"],
         output_names=output_names,
         **kwargs,
     )

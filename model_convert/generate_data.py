@@ -263,8 +263,8 @@ def forward(
 
     mel = compute_feat(sound_file, n_mels=model.n_mels).numpy()
 
-    os.makedirs(f"calibrations_{model_type}/encoder/mel", exist_ok=True)
-    np.save(f"./calibrations_{model_type}/encoder/mel/{name}.npy", mel)
+    os.makedirs(f"calibrations_{model_type}/encoder/{model_type}-mel", exist_ok=True)
+    np.save(f"./calibrations_{model_type}/encoder/{model_type}-mel/{name}.npy", mel)
 
     cross_k, cross_v = model.run_encoder(mel)
 
@@ -401,7 +401,7 @@ def main():
             gen_num += 1
 
     tar_dirs = [
-        f"calibrations_{model_type}/encoder/mel",
+        f"calibrations_{model_type}/encoder/{model_type}-mel",
         f"calibrations_{model_type}/decoder/tokens",
         f"calibrations_{model_type}/decoder/mask",
         f"calibrations_{model_type}/decoder/offset",

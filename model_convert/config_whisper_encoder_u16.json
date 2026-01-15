@@ -28,7 +28,7 @@
     },
     "input_processors": [
       {
-        "tensor_name": "mel"
+        "tensor_name": "DEFAULT"
       }
     ],
     "compiler": {

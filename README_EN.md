@@ -41,6 +41,7 @@ Currently supported model scales:
 - tiny
 - base  
 - small
+- medium
 - turbo
 
 Tested languages:

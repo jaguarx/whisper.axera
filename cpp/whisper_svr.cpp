@@ -12,9 +12,9 @@ int main(int argc, char** argv) {
     cmd.add<int>("port", 0, "http port", false, 8080);
     cmd.add<std::string>("model_type", 't', "tiny, base, small, turbo, large", false, "turbo");
 #if defined(CHIP_AX650)    
-    cmd.add<std::string>("model_path", 'p', "model path which contains tiny/ base/ small/ turbo/", false, "../models-ax650");
+    cmd.add<std::string>("model_path", 'p', "model path which contains tiny/ base/ small/ turbo/", false, "../../models-ax650");
 #else
-    cmd.add<std::string>("model_path", 'p', "model path which contains tiny/ base/ small/ turbo/", false, "../models-ax630c");
+    cmd.add<std::string>("model_path", 'p', "model path which contains tiny/ base/ small/ turbo/", false, "../../models-ax630c");
 #endif
     cmd.add<std::string>("language", 'l', "en, zh", false, "zh");
     cmd.parse_check(argc, argv);

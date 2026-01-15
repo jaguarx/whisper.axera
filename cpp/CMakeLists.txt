@@ -65,9 +65,9 @@ target_include_directories(whisper_cli PRIVATE src)
 target_link_libraries(whisper_cli PUBLIC ax_whisper PRIVATE ${MSP_LIBS})
 
 # whisper_srv executable - 依赖于 ax_whisper 库
-add_executable(whisper_srv whisper_srv.cpp)
-target_include_directories(whisper_srv PRIVATE src src/utils/)
-target_link_libraries(whisper_srv PUBLIC ax_whisper PRIVATE ${MSP_LIBS} pthread)
+add_executable(whisper_svr whisper_svr.cpp)
+target_include_directories(whisper_svr PRIVATE src src/utils/)
+target_link_libraries(whisper_svr PUBLIC ax_whisper PRIVATE ${MSP_LIBS} pthread)
 
 # 安装 ax_whisper 库和头文件
 install(TARGETS ax_whisper
@@ -84,7 +84,7 @@ install(FILES src/api/ax_whisper_api.h
 )
 
 # 安装可执行文件
-install(TARGETS whisper_cli whisper_srv
+install(TARGETS whisper_cli whisper_svr
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
@@ -107,7 +107,7 @@ file(COPY ${CMAKE_SOURCE_DIR}/opencc/share/opencc/TSPhrases.ocd2 DESTINATION ${C
 file(COPY ${CMAKE_SOURCE_DIR}/opencc/share/opencc/TSCharacters.ocd2 DESTINATION ${CMAKE_INSTALL_PREFIX})
 
 # 设置RPATH
-set_target_properties(whisper_cli whisper_srv PROPERTIES
+set_target_properties(whisper_cli whisper_svr PROPERTIES
     INSTALL_RPATH "$ORIGIN/lib"
     BUILD_WITH_INSTALL_RPATH TRUE  # 构建时也使用install的RPATH
     SKIP_BUILD_RPATH FALSE

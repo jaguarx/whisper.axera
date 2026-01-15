@@ -38,6 +38,7 @@ OpenAI Whisper on Axera
  - Chinese
  - Japanese
  - Korean
+ - Malaysian
 
 
 如需小语种或者其他大小的模型可能需要自行转换，参考  
